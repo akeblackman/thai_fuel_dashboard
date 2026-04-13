@@ -10,6 +10,7 @@ from datetime import date, datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.data import clean_fuel_prices, filter_df, load_raw_excel
 from src.insights import (
@@ -63,6 +64,37 @@ def _auto_update_enabled() -> bool:
     # ค่าเริ่มต้น 0 = หน้าเว็บไม่ดึงข้อมูลทุกครั้งที่โหลด (แนะนำให้ใช้ cron + scripts/daily_update.sh)
     v = os.environ.get("AUTO_UPDATE_FUEL_DATA", "0").strip().lower()
     return v not in ("0", "false", "no", "off")
+
+
+def _ga4_measurement_id() -> str:
+    mid = os.environ.get("GA4_MEASUREMENT_ID", "").strip()
+    try:
+        if not mid:
+            mid = str(st.secrets.get("ga4", {}).get("measurement_id", "")).strip()
+    except Exception:
+        pass
+    return mid
+
+
+def _inject_ga4() -> None:
+    """Inject GA4 tracker (optional; enabled when GA4_MEASUREMENT_ID is set)."""
+    mid = _ga4_measurement_id()
+    if not mid:
+        return
+    components.html(
+        f"""
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id={mid}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){{dataLayer.push(arguments);}}
+  gtag('js', new Date());
+  gtag('config', '{mid}', {{'anonymize_ip': true}});
+</script>
+""",
+        height=0,
+        width=0,
+    )
 
 
 def _clamp_date_range_tuple(
@@ -662,6 +694,7 @@ def _load_clean(path: str, file_mtime_ns: int) -> tuple[pd.DataFrame, dict]:
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="⛽", initial_sidebar_state="expanded")
+    _inject_ga4()
     _inject_css()
 
     data_path = ROOT_DIR / DATA_FILE
