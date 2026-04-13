@@ -72,15 +72,6 @@ def _attach_fuel_group(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_raw_data(path: str) -> pd.DataFrame:
-    """โหลดชุดข้อมูลดิบ — รองรับ .xlsx (หลายชีต) หรือ .csv"""
-    p = path.lower()
-    if p.endswith(".csv"):
-        df = pd.read_csv(path)
-        return _coerce_to_standard_columns(df)
-    return load_raw_excel(path)
-
-
 def load_raw_excel(path: str) -> pd.DataFrame:
     xl = pd.ExcelFile(path, engine="openpyxl")
     last_cols: list[str] = []

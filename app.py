@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.data import clean_fuel_prices, filter_df, load_raw_data
+from src.data import clean_fuel_prices, filter_df, load_raw_excel
 from src.insights import (
     NOTE_TWELVE_DAY_WAR_TH,
     build_insights_dict,
@@ -62,59 +62,6 @@ def _auto_update_enabled() -> bool:
     # ค่าเริ่มต้น 0 = หน้าเว็บไม่ดึงข้อมูลทุกครั้งที่โหลด (แนะนำให้ใช้ cron + scripts/daily_update.sh)
     v = os.environ.get("AUTO_UPDATE_FUEL_DATA", "0").strip().lower()
     return v not in ("0", "false", "no", "off")
-
-
-def _gdrive_always_refresh() -> bool:
-    v = os.environ.get("FUEL_GDRIVE_ALWAYS_REFRESH", "0").strip().lower()
-    return v in ("1", "true", "yes", "on")
-
-
-def _gdrive_config() -> tuple[str, str]:
-    """คืน (file_id, filename) — file_id ว่าง = ใช้ไฟล์ในเครื่อง `DATA_FILE`"""
-    fid = os.environ.get("FUEL_DATA_GDRIVE_FILE_ID", "").strip()
-    fn = os.environ.get("FUEL_DATA_GDRIVE_FILENAME", "").strip()
-    try:
-        g = st.secrets["gdrive"]
-        if not fid and "file_id" in g:
-            fid = str(g["file_id"]).strip()
-        if not fn and "filename" in g:
-            fn = str(g["filename"]).strip()
-    except Exception:
-        pass
-    if not fn:
-        fn = DATA_FILE
-    return fid, fn
-
-
-def _prepare_data_path() -> tuple[pathlib.Path, str]:
-    """
-    คืน (path, source) โดย source เป็น 'local' หรือ 'google_drive'
-    ถ้าตั้ง FUEL_DATA_GDRIVE_FILE_ID (หรือ secrets gdrive.file_id) จะดาวน์โหลดไปที่ .cache/gdrive_data/
-    """
-    fid, fn = _gdrive_config()
-    if not fid:
-        return ROOT_DIR / DATA_FILE, "local"
-    from src.gdrive_data import download_gdrive_file, extract_google_drive_file_id
-
-    fid = extract_google_drive_file_id(fid)
-    cache = ROOT_DIR / ".cache" / "gdrive_data"
-    dest = cache / fn
-    sig = (fid, fn)
-    sess_key = "_gdrive_fuel_sig"
-    path_key = "_gdrive_fuel_path"
-    always = _gdrive_always_refresh()
-    cached_path = st.session_state.get(path_key)
-    if (
-        not always
-        and st.session_state.get(sess_key) == sig
-        and isinstance(cached_path, pathlib.Path)
-        and cached_path.is_file()
-    ):
-        return cached_path, "google_drive"
-    download_gdrive_file(fid, dest)
-    st.session_state[sess_key] = sig
-    st.session_state[path_key] = dest
-    return dest, "google_drive"
 
 
 def _clamp_date_range_tuple(
@@ -695,7 +642,7 @@ def _apply_shock_highlights(
 @st.cache_data(show_spinner="Loading & cleaning data…")
 def _load_clean(path: str, file_mtime_ns: int) -> tuple[pd.DataFrame, dict]:
     _ = file_mtime_ns  # เมื่อไฟล์ถูกเขียนใหม่ mtime เปลี่ยน → โหลดชุดข้อมูลใหม่
-    raw = load_raw_data(path)
+    raw = load_raw_excel(path)
     df, report = clean_fuel_prices(raw)
     return df, report.__dict__
 
@@ -704,18 +651,10 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="⛽", initial_sidebar_state="expanded")
     _inject_css()
 
-    try:
-        data_path, data_source = _prepare_data_path()
-    except Exception as e:
-        st.error(
-            "ไม่สามารถเตรียมไฟล์ชุดข้อมูลได้ — ถ้าใช้ Google Drive ให้ตรวจว่าแชร์ไฟล์เป็น "
-            "'Anyone with the link' และตั้ง `FUEL_DATA_GDRIVE_FILE_ID` หรือ `gdrive.file_id` ใน Secrets ให้ถูกต้อง"
-        )
-        st.code(str(e))
-        st.stop()
+    data_path = ROOT_DIR / DATA_FILE
 
     pipeline_error: str | None = None
-    if _auto_update_enabled() and data_source != "google_drive":
+    if _auto_update_enabled():
         try:
             _run_update_pipeline()
         except Exception as e:
@@ -723,15 +662,8 @@ def main() -> None:
 
     if not data_path.is_file():
         st.error(
-            f"ไม่พบไฟล์ชุดข้อมูล (`{data_path.name}`) — "
-            + (
-                "ตรวจสิทธิ์แชร์บน Google Drive และ file ID / ชื่อไฟล์ใน `FUEL_DATA_GDRIVE_FILENAME`"
-                if data_source == "google_drive"
-                else (
-                    f"วาง `{DATA_FILE}` ในโฟลเดอร์โปรเจกต์ หรือรัน `python update_fuel_data.py` / `scripts/daily_update.sh` "
-                    "หรือตั้ง `AUTO_UPDATE_FUEL_DATA=1` ให้แอปลองดึงเมื่อโหลดหน้า"
-                )
-            )
+            f"ไม่พบไฟล์ `{DATA_FILE}` — รัน `python update_fuel_data.py` หรือ `scripts/daily_update.sh` "
+            "หรือตั้ง `AUTO_UPDATE_FUEL_DATA=1` ให้แอปลองดึงเมื่อโหลดหน้า"
         )
         if pipeline_error:
             st.code(pipeline_error)
@@ -754,14 +686,6 @@ def main() -> None:
     )
 
     with st.sidebar:
-        if data_source == "google_drive":
-            st.caption("แหล่งข้อมูล: Google Drive")
-            if st.button("รีโหลดจาก Google Drive", key="gdrive_refresh_btn"):
-                for k in ("_gdrive_fuel_sig", "_gdrive_fuel_path"):
-                    st.session_state.pop(k, None)
-                _load_clean.clear()
-                st.rerun()
-
         min_d = pd.to_datetime(report["min_date"]).date()
         max_d = pd.to_datetime(report["max_date"]).date()
 
