@@ -30,6 +30,7 @@ from src.insights import (
 
 
 APP_TITLE = "Thailand Fuel Price Monitor"
+CREDIT_BYLINE = "By Dr.Akeky"
 DATA_FILE = "fuel_prices_cleaned.xlsx"
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent
@@ -388,6 +389,15 @@ footer {visibility: hidden;}
   max-width: 36rem;
   line-height: 1.45;
 }
+.hero-wrap .hero-byline {
+  color: rgba(248, 250, 252, 0.52) !important;
+  margin: 1.1rem auto 0 auto !important;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  max-width: 36rem;
+  line-height: 1.4;
+}
 
 .card {
   background: #ffffff;
@@ -578,8 +588,11 @@ h3 { font-weight: 600 !important; color: #0f172a !important; letter-spacing: -0.
 
 
 def _hero(title: str, subtitle: str) -> None:
+    t = html.escape(title)
+    s = html.escape(subtitle)
+    c = html.escape(CREDIT_BYLINE)
     st.markdown(
-        f'<div class="hero-wrap"><h1>{title}</h1><p>{subtitle}</p></div>',
+        f'<div class="hero-wrap"><h1>{t}</h1><p>{s}</p><p class="hero-byline">{c}</p></div>',
         unsafe_allow_html=True,
     )
 
