@@ -1,10 +1,18 @@
+# อัปเดตชุดข้อมูลราคาน้ำมัน (ดึง สนพ. → clean) แล้ว commit กลับเข้า repo
+#
+# หมายเหตุ GitHub Actions:
+# - schedule.cron ใช้เวลา UTC เท่านั้น (ไม่มี timezone ใน on.schedule)
+# - 05:00 น. ประเทศไทย (UTC+7) ≈ 22:00 UTC ของ “วันก่อน” → cron: "0 22 * * *"
+# - เว็บ สนพ. อาจตอบ 403 จาก runner ของ GitHub — ตั้ง HTTPS_PROXY (พร็อกซี egress ไทย)
+#   ใน Repository secrets แล้วส่งเป็น env ด้านล่าง
+
 name: Update fuel data
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 5 * * *"
-      timezone: "Asia/Bangkok"
+    # 22:00 UTC = 05:00 น. พรุ่งนี้ตามเวลาไทย (ไม่มี DST)
+    - cron: "0 22 * * *"
 
 permissions:
   contents: write
@@ -12,10 +20,17 @@ permissions:
 jobs:
   update-data:
     runs-on: ubuntu-latest
+    env:
+      # ตั้งใน GitHub → Settings → Secrets and variables → Actions (ไม่บังคับ)
+      HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
+      HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+      NO_PROXY: ${{ secrets.NO_PROXY }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,13 +43,16 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run update script
-        run: |
-          python update_fuel_data.py
+        run: python update_fuel_data.py
 
       - name: Commit updated data if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || git commit -m "chore: update fuel data"
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update fuel data"
           git push
