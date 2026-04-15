@@ -6,6 +6,10 @@
 ผลลัพธ์แต่ละวันคือไฟล์ .xls — หลังดึงครบจะรวมเป็น long-format → Excel + SQLite ใน output-dir
 ถ้าไม่ระบุ --start จะอ่านวันที่ล่าสุดจาก oil_prices_merged.xlsx แล้วดึงต่อจนถึงวันนี้
 (รวมเฉพาะจากไฟล์เดิมโดยไม่ดึงใหม่: ใช้ scripts/merge_eppo_oil_prices.py)
+
+หมายเหตุ CI: GitHub-hosted runner บางครั้งได้ HTTP 403 จากเว็บ สนพ. (บล็อก IP ศูนย์ข้อมูล)
+ถ้ายัง 403 หลังปรับหัวคำขอแล้ว — ใช้ self-hosted runner / VPS ในไทย / รันบนเครื่องคุณแทน
+หรือตั้ง HTTPS_PROXY ที่ requests อ่านได้ (Session ใช้ trust_env ค่าเริ่มต้น)
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import certifi
 import pandas as pd
@@ -25,6 +30,51 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://www2.eppo.go.th/epporop/entryreport/ropbydaypublic.aspx"
+
+
+def _browser_like_headers(url: str, *, is_post: bool = False) -> dict[str, str]:
+    """หัวคำขอแบบเบราว์เซอร์ — ลดโอกาสถูก WAF ปฏิเสธเมื่อเทียบกับ bot UA แบบเก่า"""
+    p = urlparse(url)
+    origin = f"{p.scheme}://{p.netloc}"
+    h: dict[str, str] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "th-TH,th;q=0.95,en-US;q=0.9,en;q=0.85",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Origin": origin,
+        "Referer": url,
+    }
+    if is_post:
+        h["Content-Type"] = "application/x-www-form-urlencoded"
+        h["Sec-Fetch-Dest"] = "document"
+        h["Sec-Fetch-Mode"] = "navigate"
+        h["Sec-Fetch-Site"] = "same-origin"
+        h["Sec-Fetch-User"] = "?1"
+    else:
+        h["Sec-Fetch-Dest"] = "document"
+        h["Sec-Fetch-Mode"] = "navigate"
+        h["Sec-Fetch-Site"] = "none"
+        h["Sec-Fetch-User"] = "?1"
+    return h
+
+
+def _http_fail_hint(status: int) -> str:
+    if status == 403:
+        return (
+            " — มักเกิดกับ GitHub Actions / cloud IP; ลอง self-hosted runner หรือ VPS ในไทย "
+            "หรือตั้ง HTTPS_PROXY (requests อ่านจาก environment)"
+        )
+    return ""
 XLS_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 MERGED_SHEET = "oil_prices_long"
 OIL_XLS_FILENAME_DATE = re.compile(r"oil_price_(\d{4}-\d{2}-\d{2})\.xls$", re.IGNORECASE)
@@ -154,7 +204,16 @@ def parse_xls_to_long(path: Path) -> tuple[Optional[date], pd.DataFrame]:
 
 
 def fetch_xls_for_date(session: requests.Session, day: date, timeout: int = 120) -> bytes:
-    r = session.get(BASE_URL, verify=certifi.where(), timeout=timeout)
+    r = session.get(
+        BASE_URL,
+        headers=_browser_like_headers(BASE_URL, is_post=False),
+        verify=certifi.where(),
+        timeout=timeout,
+    )
+    if r.status_code == 403:
+        raise RuntimeError(
+            f"403 Forbidden เมื่อ GET {BASE_URL}{_http_fail_hint(403)}"
+        )
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     vs = soup.find("input", {"id": "__VIEWSTATE"})
@@ -176,8 +235,12 @@ def fetch_xls_for_date(session: requests.Session, day: date, timeout: int = 120)
         data=data,
         verify=certifi.where(),
         timeout=timeout,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers=_browser_like_headers(BASE_URL, is_post=True),
     )
+    if r2.status_code == 403:
+        raise RuntimeError(
+            f"403 Forbidden เมื่อ POST {BASE_URL}{_http_fail_hint(403)}"
+        )
     r2.raise_for_status()
     return r2.content
 
@@ -458,12 +521,7 @@ def main() -> None:
         )
 
     session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": "Mozilla/5.0 (compatible; EPPOOilFetcher/1.0; +research)",
-            "Accept": "*/*",
-        }
-    )
+    session.headers.update(_browser_like_headers(BASE_URL, is_post=False))
 
     ok = 0
     fail = 0
